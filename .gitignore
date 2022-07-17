@@ -1,0 +1,4 @@
+*.out
+*.txt
+*.o
+.gdb_history
