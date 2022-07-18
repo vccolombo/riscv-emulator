@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "elfparser.h"
+
 #define SYS_close 57
 #define SYS_lseek 62
 #define SYS_read 63
@@ -178,32 +180,51 @@ routine_t decode(uint32_t insn)
   return BAD_INSN;
 }
 
-int load_elf(char *path, uint8_t *dst)
+void load_all_segments(struct elf_header *elfh, uint8_t *dst, uint8_t *elf)
 {
+  for (int i = 0; i < elfh->e_phnum; i++) {
+    struct elf_segment elfs;
+    elf_parse_segment(elfh, &elfs, i, elf);
+    if (elfs.p_type == PT_LOAD) {
+      elf_load_segment(&elfs, dst, elf);
+    }
+  }
+}
+
+// returns the entry point
+uint64_t load_elf(char *path, uint8_t *dst)
+{
+  int err;
   int fd = open(path, O_RDONLY);
   if (fd == -1) {
     return -errno;
   }
 
   struct stat sb;
-  int err = fstat(fd, &sb);
+  err = fstat(fd, &sb);
   if (err == -1) {
     return -errno;
   }
 
-  // for now works only for test binary
-  read(fd, dst + 0x10000, 0x10c);
-  lseek(fd, 0x10c, SEEK_SET);
-  read(fd, dst + 0x1110c, 0x0d);
+  uint8_t *elf = malloc(sb.st_size);
+  err = read(fd, elf, sb.st_size);
+  if (err == -1) {
+    return -errno;
+  }
 
+  struct elf_header elfh;
+  elf_parse_header(&elfh, elf);
+  load_all_segments(&elfh, dst, elf);
+
+  free(elf);
   close(fd);
 
-  return 0;
+  return elfh.e_entry;
 }
 
 int main(int argc, char* argv[])
 {
-  int err;
+  int entry_point;
   struct context ctx = {{ 0 }};
 
   if (argc < 2) {
@@ -212,13 +233,13 @@ int main(int argc, char* argv[])
   }
 
   uint8_t *mem = malloc(0x100000);
-  err = load_elf(argv[1], mem);
-  if (err < 0) {
-    fprintf(stderr, "Unable to read file: ERROR %d\n", err);
-    return err;
+  entry_point = load_elf(argv[1], mem);
+  if (entry_point < 0) {
+    fprintf(stderr, "Unable to read file: ERROR %d\n", entry_point);
+    return entry_point;
   }
 
-  ctx.regs[PC] = 0x100e8;
+  ctx.regs[PC] = entry_point;
   ctx.mem = mem;
 
   bool shutdown = false;
